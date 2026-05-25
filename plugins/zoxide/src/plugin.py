@@ -24,7 +24,10 @@ def get_user_home() -> Path:
 
 
 def get_powershell_profile_path() -> Path:
-    return get_user_home() / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+    home = get_user_home()
+    if sys.platform == "win32":
+        return home / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+    return home / ".config" / "powershell" / "profile.ps1"
 
 
 def get_bash_profile_path() -> Path:
@@ -65,8 +68,16 @@ def build_init_line(shell: str, init_args: dict) -> str:
 
 def update_profile_content(existing_text: str, desired_line: str) -> tuple[str, bool]:
     current_lines = existing_text.splitlines()
-    matching_lines = [line for line in current_lines if "zoxide init" in line]
-    updated_lines = [line for line in current_lines if "zoxide init" not in line]
+    matching_lines = [
+        line
+        for line in current_lines
+        if "zoxide init" in line and not line.lstrip().startswith("#")
+    ]
+    updated_lines = [
+        line
+        for line in current_lines
+        if "zoxide init" not in line or line.lstrip().startswith("#")
+    ]
 
     if matching_lines == [desired_line] and len(updated_lines) == len(current_lines) - 1:
         return existing_text, False
@@ -108,6 +119,10 @@ def update_profile_file(profile_path: Path, desired_line: str, dry_run: bool) ->
 
 
 def run_setx(var_name: str, value: str) -> None:
+    if sys.platform != "win32":
+        log(f"Skipping setx for {var_name} on non-Windows platform")
+        return
+
     result = subprocess.run(["setx", var_name, value], capture_output=True, text=True)
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "setx failed").strip()

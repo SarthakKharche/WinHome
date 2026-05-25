@@ -1,5 +1,7 @@
 import importlib.util
+import json
 from pathlib import Path
+from io import StringIO
 from unittest.mock import MagicMock, mock_open, patch
 
 
@@ -99,6 +101,34 @@ def test_apply_skips_setx_when_env_vars_match():
     assert result["changed"] is False
 
 
+def test_apply_skips_setx_on_non_windows():
+    with patch.dict(
+        plugin.os.environ,
+        {
+            "USERPROFILE": "C:/Users/Test",
+            "_ZO_MAX_DEPTH": "5",
+        },
+        clear=True,
+    ), patch.object(plugin.sys, "platform", "linux"), patch.object(
+        plugin, "update_profile_file", return_value=False
+    ), patch.object(
+        plugin.subprocess,
+        "run",
+        side_effect=AssertionError("setx should not run on non-Windows platforms"),
+    ):
+        result = plugin.apply_config(
+            {
+                "env_vars": {"_ZO_MAX_DEPTH": "10"},
+                "init": {},
+            },
+            dry_run=False,
+            request_id="req-nonwin",
+        )
+
+    assert result["requestId"] == "req-nonwin"
+    assert result["success"] is True
+
+
 def test_apply_updates_powershell_init_line_when_flags_change():
     existing = 'Write-Host "hello"\nInvoke-Expression (& { (zoxide init powershell) })\n'
     opened = mock_open(read_data=existing)
@@ -124,6 +154,18 @@ def test_apply_updates_powershell_init_line_when_flags_change():
     written = "".join(call.args[0] for call in handle.write.call_args_list)
     assert "Invoke-Expression (& { (zoxide init powershell --cmd z) })" in written
     assert 'Write-Host "hello"' in written
+
+
+def test_apply_preserves_comment_lines_containing_zoxide_init():
+    existing = '# How to use zoxide init\nInvoke-Expression (& { (zoxide init powershell) })\n'
+    updated, changed = plugin.update_profile_content(
+        existing,
+        plugin.build_init_line("powershell", {"cmd": "z", "hook": "pwd", "no_cmd": False}),
+    )
+
+    assert changed is True
+    assert '# How to use zoxide init' in updated
+    assert 'Invoke-Expression (& { (zoxide init powershell --cmd z) })' in updated
 
 
 def test_apply_appends_init_line_if_not_present():
@@ -241,3 +283,31 @@ def test_process_request_returns_error_for_unknown_command():
     assert result["requestId"] == "req-7"
     assert result["success"] is False
     assert "Unknown command" in result["error"]
+
+
+def test_main_handles_pretty_printed_json_request():
+    request = json.dumps(
+        {
+            "requestId": "req-main",
+            "command": "check_installed",
+            "args": {},
+            "context": {},
+        },
+        indent=2,
+    )
+
+    with patch("sys.stdin", StringIO(request)), patch("sys.stdout", new_callable=StringIO), patch.object(
+        plugin.shutil, "which", side_effect=[None, "C:/Tools/zoxide"]
+    ) as mock_which:
+        plugin.main()
+        output = plugin.sys.stdout.getvalue() if hasattr(plugin.sys.stdout, "getvalue") else None
+
+    assert mock_which.call_count == 2
+
+    if output is None:
+        output = ""
+
+    response = json.loads(output.strip())
+    assert response["requestId"] == "req-main"
+    assert response["success"] is True
+    assert response["data"] == {"installed": True}
